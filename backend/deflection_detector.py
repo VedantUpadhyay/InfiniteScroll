@@ -30,7 +30,7 @@ class SemanticDeflectionDetector:
     ) -> dict[str, Any]:
         print(f"SemanticDeflectionDetector fallback: {reason}")
         session_msg_count = self.neo4j_manager.get_message_count(session_id)
-        if session_msg_count > 2:
+        if session_msg_count >= 2:
             topic_label = await self._generate_topic_label(new_message_content)
             return {
                 "type": "BRANCH",
@@ -278,7 +278,7 @@ class SemanticDeflectionDetector:
                 "linked_topic": second_topic,
             }
 
-        if similarity_score >= 0.78:
+        if similarity_score >= 0.72:
             return {
                 "type": "EXTENSION",
                 "topic_label": current_topic_label,
