@@ -1,0 +1,44 @@
+# Render Blueprint for MindChat (Autonomous Agents Hackathon demo)
+# Uses all sponsor integrations in the backend: OpenAI, Neo4j, Tavily; frontend is Vite static site.
+
+services:
+  - type: web
+    name: mindchat-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        value: neo4j
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: TAVILY_PROVIDER
+        value: mcp
+      - key: OPENAI_CHAT_MODEL
+        value: gpt-3.5-turbo
+      - key: OPENAI_ANALYSIS_MODEL
+        value: gpt-4o
+      - key: OPENAI_RATE_LIMIT_RETRIES
+        value: "3"
+      - key: OPENAI_RETRY_BASE_DELAY_SECONDS
+        value: "1.0"
+
+  - type: web
+    name: mindchat-frontend
+    runtime: static
+    rootDir: frontend
+    plan: free
+    buildCommand: npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
