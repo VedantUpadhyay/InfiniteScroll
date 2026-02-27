@@ -31,6 +31,7 @@ export default function ChatInterface() {
   })
   const [isBuildingGraph, setIsBuildingGraph] = useState(false)
   const [graphStatusMessage, setGraphStatusMessage] = useState('')
+  const [recentConcepts, setRecentConcepts] = useState([])
   const logRef = useRef(null)
 
   useEffect(() => {
@@ -100,6 +101,7 @@ export default function ChatInterface() {
       }
 
       const data = await response.json()
+      const extractedConcepts = Array.isArray(data.concepts_extracted) ? data.concepts_extracted : []
       setMessages((prev) => [
         ...prev.map((message) =>
           message.id === optimisticUserId && data.user_message_id
@@ -119,6 +121,14 @@ export default function ChatInterface() {
         consolidationRan: Boolean(data.consolidation_ran),
         researchHint: Boolean(data.research_hint),
       })
+      setRecentConcepts(extractedConcepts.slice(0, 5))
+
+      if (extractedConcepts.length > 0) {
+        console.log(`Concepts: ${extractedConcepts.join(', ')}`)
+      }
+      if (data.deep_analysis_triggered) {
+        console.log('Deep analysis triggered - knowledge graph will refresh.')
+      }
 
       if (data.consolidation_ran) {
         setIsBuildingGraph(false)
@@ -219,6 +229,9 @@ export default function ChatInterface() {
                 ? 'Research intent detected (Tavily hook later)'
                 : 'TOT mode active'}
             </span>
+            {recentConcepts.length > 0 ? (
+              <span>Extracted concepts: {recentConcepts.join(', ')}</span>
+            ) : null}
             {graphStatusMessage ? <span>{graphStatusMessage}</span> : null}
             {error ? <span className="error-text">{error}</span> : null}
           </div>

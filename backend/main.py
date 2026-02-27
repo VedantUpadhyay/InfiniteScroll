@@ -534,6 +534,27 @@ def chat(request: ChatRequest) -> dict[str, Any]:
 
     assistant_message = neo4j_manager.store_message(request.session_id, "assistant", reply)
 
+    # Tier 1: quick concept extraction on every exchange (immediate encoding).
+    concepts_extracted: list[str] = []
+    quick_extraction_error: str | None = None
+    try:
+        concepts_extracted = openai_manager.extract_concepts_quick(request.message.strip(), reply)
+        if concepts_extracted:
+            neo4j_manager.add_concepts_to_message(
+                message_id=user_message["id"],
+                concepts=concepts_extracted,
+                session_id=request.session_id,
+            )
+            neo4j_manager.add_concepts_to_message(
+                message_id=assistant_message["id"],
+                concepts=concepts_extracted,
+                session_id=request.session_id,
+            )
+            print(f"Extracted {len(concepts_extracted)} quick concepts: {concepts_extracted}")
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        quick_extraction_error = str(exc)
+        print(f"Quick concept extraction failed: {exc}")
+
     stored_research_sources: list[dict[str, Any]] = []
     if research_context and research_context.get("used"):
         try:
@@ -553,13 +574,14 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - defensive runtime guard
             research_context["storage_error"] = str(exc)
 
-    total_messages = neo4j_manager.count_messages(request.session_id)
+    total_messages = neo4j_manager.get_message_count(request.session_id)
     consolidation_due = total_messages > 0 and total_messages % 10 == 0
     consolidation_ran = False
     consolidation_summary: dict[str, Any] | None = None
     consolidation_error: str | None = None
 
     if consolidation_due:
+        print(f"Triggering deep analysis at {total_messages} messages...")
         try:
             # Consolidation uses full conversation (long-term memory), not the working-memory window.
             full_conversation = neo4j_manager.get_all_messages(request.session_id)
@@ -574,16 +596,28 @@ def chat(request: ChatRequest) -> dict[str, Any]:
                 "relationship_count": len(analysis.get("relationships", [])),
                 "deflection_point_count": len(analysis.get("deflection_points", [])),
             }
+            print(
+                "Deep analysis complete: "
+                f"{consolidation_summary['topic_count']} topics, "
+                f"{consolidation_summary['deflection_point_count']} deflection points"
+            )
         except Exception as exc:  # pragma: no cover - defensive runtime guard
             consolidation_error = str(exc)
+            print(f"Deep analysis failed: {exc}")
 
     return {
         "session_id": request.session_id,
         "user_message_id": user_message["id"],
+        "message_id": assistant_message["id"],
+        "response": reply,
         "reply": reply,
         "assistant_message_id": assistant_message["id"],
         "working_memory_size": min(len(recent_messages), openai_manager.max_working_memory_messages),
         "total_messages": total_messages,
+        "message_count": total_messages,
+        "concepts_extracted": concepts_extracted,
+        "quick_extraction_error": quick_extraction_error,
+        "deep_analysis_triggered": consolidation_due,
         "consolidation_due": consolidation_due,
         "consolidation_ran": consolidation_ran,
         "consolidation_summary": consolidation_summary,
@@ -593,6 +627,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         "research_context": research_context,
         "notes": [
             "Chat path uses working memory (last ~20 messages).",
+            "Quick concept extraction runs on every exchange for incremental graph updates.",
             "Long-term memory consolidation runs automatically every 10 messages using the FULL conversation.",
             "You can also call /api/analyze manually to force consolidation.",
             "Research questions can trigger Tavily search; sources are stored as Neo4j Source nodes linked to concepts.",

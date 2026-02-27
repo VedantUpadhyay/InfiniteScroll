@@ -19,6 +19,7 @@ class OpenAIManager:
         self.api_key = os.getenv("OPENAI_API_KEY", "")
         # Working-memory chat path defaults to gpt-3.5-turbo for hackathon speed/cost efficiency.
         self.chat_model = os.getenv("OPENAI_CHAT_MODEL", "gpt-3.5-turbo")
+        self.quick_extraction_model = os.getenv("OPENAI_QUICK_EXTRACTION_MODEL", "gpt-3.5-turbo")
         self.analysis_model = os.getenv("OPENAI_ANALYSIS_MODEL", "gpt-4o")
         self.max_working_memory_messages = 20
         self.max_rate_limit_retries = int(os.getenv("OPENAI_RATE_LIMIT_RETRIES", "3"))
@@ -90,6 +91,30 @@ class OpenAIManager:
         try:
             parsed = json.loads(match.group(0))
             return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    def _parse_json_array(self, text: str) -> list[Any] | None:
+        if not text:
+            return None
+
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+            candidate = re.sub(r"\s*```$", "", candidate)
+
+        try:
+            parsed = json.loads(candidate)
+            return parsed if isinstance(parsed, list) else None
+        except json.JSONDecodeError:
+            pass
+
+        match = re.search(r"\[[\s\S]*\]", candidate, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, list) else None
         except json.JSONDecodeError:
             return None
 
@@ -242,6 +267,86 @@ Latest user message:
             "topic": "general",
             "method": "heuristic-fallback",
         }
+
+    def extract_concepts_quick(self, user_message: str, assistant_message: str) -> list[str]:
+        """
+        Fast concept extraction for incremental graph building.
+        Extracts 3-5 concise concepts for every exchange.
+        """
+        if not user_message.strip() and not assistant_message.strip():
+            return []
+
+        fallback_text = f"{user_message}\n{assistant_message}".strip()
+        fallback_concepts = self.extract_retrieval_cues(fallback_text)[:5]
+        if not self.client:
+            return fallback_concepts
+
+        prompt = f"""Extract 3-5 key concepts from this conversation exchange.
+Focus on:
+- Important topics mentioned
+- Technical terms
+- Key ideas or theories
+- Named entities (people, research, methods)
+
+Return ONLY a JSON array of concept names (lowercase, concise).
+
+User: {user_message}
+Assistant: {assistant_message}
+
+Format: ["concept1", "concept2", "concept3"]
+
+Do NOT include explanations, just the JSON array."""
+
+        attempts = self.max_rate_limit_retries + 1
+        for attempt in range(attempts):
+            raw_content = ""
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.quick_extraction_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Extract concise concepts from a dialogue and return only a JSON array."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=100,
+                )
+                raw_content = (response.choices[0].message.content or "").strip()
+                parsed = self._parse_json_array(raw_content)
+                if not isinstance(parsed, list):
+                    return fallback_concepts
+
+                cleaned: list[str] = []
+                seen: set[str] = set()
+                for concept in parsed:
+                    if not isinstance(concept, str):
+                        continue
+                    normalized = concept.lower().strip()
+                    if not normalized or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    cleaned.append(normalized)
+                    if len(cleaned) >= 5:
+                        break
+                return cleaned or fallback_concepts
+            except Exception as exc:
+                is_rate_limited = self._is_rate_limit_error(exc)
+                is_last_attempt = attempt >= attempts - 1
+                if is_rate_limited and not is_last_attempt:
+                    delay = self.retry_base_delay_seconds * (2**attempt)
+                    time.sleep(delay)
+                    continue
+                if raw_content:
+                    print(f"Warning: Could not parse concepts JSON: {raw_content}")
+                else:
+                    print(f"Error in quick concept extraction: {exc}")
+                return fallback_concepts
+
+        return fallback_concepts
 
     def generate_chat_reply(self, messages: list[dict[str, Any]], session_id: str) -> str:
         """Backward-compatible wrapper used by the existing FastAPI route."""

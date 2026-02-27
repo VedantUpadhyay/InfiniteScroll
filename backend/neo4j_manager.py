@@ -272,7 +272,76 @@ class Neo4jManager:
         return self.get_all_messages(session_id)
 
     def count_messages(self, session_id: str) -> int:
+        if self.driver:
+            query = """
+            MATCH (m:Message {session_id: $session_id})
+            RETURN count(m) AS count
+            """
+            try:
+                with self.driver.session() as session:
+                    row = session.run(query, session_id=session_id).single()
+                if row is not None:
+                    return int(row.get("count", 0))
+            except Exception as exc:
+                self._record_error("Failed to count messages in Neo4j", exc)
+
         return len(self._messages.get(session_id, []))
+
+    def get_message_count(self, session_id: str) -> int:
+        """Compatibility alias for chat orchestration code."""
+        return self.count_messages(session_id)
+
+    def add_concepts_to_message(self, message_id: str, concepts: list[str], session_id: str) -> None:
+        """
+        Incrementally link extracted concepts to a specific message.
+        Called for every chat exchange to avoid graph gaps between deep analyses.
+        """
+        normalized_concepts: list[str] = []
+        seen: set[str] = set()
+        for concept in concepts:
+            concept_str = str(concept).lower().strip()
+            if not concept_str or concept_str in seen:
+                continue
+            seen.add(concept_str)
+            normalized_concepts.append(concept_str)
+
+        if not normalized_concepts:
+            return
+
+        # Keep memory fallback consistent even when Neo4j is unavailable.
+        session_messages = self._messages.get(session_id, [])
+        for message in session_messages:
+            if message.get("id") != message_id:
+                continue
+            existing = [str(item).strip() for item in message.get("concepts", []) if str(item).strip()]
+            merged = list(dict.fromkeys([*existing, *normalized_concepts]))
+            message["concepts"] = merged
+            break
+
+        if not self.driver:
+            return
+
+        query = """
+        MATCH (m:Message {id: $message_id, session_id: $session_id})
+        UNWIND $concepts AS concept_name
+        MERGE (c:Concept {name: concept_name})
+        ON CREATE SET c.first_seen = timestamp()
+        MERGE (m)-[:DISCUSSES]->(c)
+        WITH DISTINCT c
+        MATCH (c)<-[:DISCUSSES]-(related_message:Message)
+        WITH c, count(DISTINCT related_message) AS msg_count
+        SET c.mention_count = msg_count
+        """
+        try:
+            with self.driver.session() as session:
+                session.run(
+                    query,
+                    message_id=message_id,
+                    session_id=session_id,
+                    concepts=normalized_concepts,
+                ).consume()
+        except Exception as exc:
+            self._record_error("Failed to incrementally add concepts to message", exc)
 
     def upsert_analysis(self, session_id: str, analysis: dict[str, Any]) -> None:
         self._analysis[session_id] = analysis
@@ -329,6 +398,10 @@ class Neo4jManager:
                     ).consume()
         except Exception:
             pass
+
+    def update_graph_structure(self, session_id: str, analysis: dict[str, Any]) -> None:
+        """Compatibility alias for orchestration code naming."""
+        self.upsert_analysis(session_id, analysis)
 
     def get_analysis(self, session_id: str) -> dict[str, Any] | None:
         return self._analysis.get(session_id)
