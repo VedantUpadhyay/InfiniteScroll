@@ -157,6 +157,15 @@ export default function ChatInterface() {
     }
   }
 
+  function handleInputKeyDown(event) {
+    if (event.key !== 'Enter') return
+    if (event.shiftKey) return
+    if (event.nativeEvent?.isComposing) return
+
+    event.preventDefault()
+    event.currentTarget.form?.requestSubmit()
+  }
+
   return (
     <section className="panel panel-chat" aria-labelledby="chat-heading">
       <div className="panel-header">
@@ -218,6 +227,7 @@ export default function ChatInterface() {
           id="mindchat-input"
           value={input}
           onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleInputKeyDown}
           placeholder="Example TOT query: “What was that thing about memory and 7?”"
           rows={3}
           disabled={isSending}
