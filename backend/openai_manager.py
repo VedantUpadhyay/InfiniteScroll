@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any
 import os
@@ -10,6 +11,172 @@ try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - dependency not installed yet
     OpenAI = None  # type: ignore[assignment]
+
+
+STOP_WORDS = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "by",
+    "from",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "can",
+    "shall",
+    "not",
+    "no",
+    "nor",
+    "so",
+    "yet",
+    "both",
+    "either",
+    "neither",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "me",
+    "him",
+    "her",
+    "us",
+    "them",
+    "my",
+    "your",
+    "his",
+    "its",
+    "our",
+    "their",
+    "this",
+    "that",
+    "these",
+    "those",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "how",
+    "when",
+    "where",
+    "why",
+    "all",
+    "any",
+    "each",
+    "every",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "one",
+    "two",
+    "three",
+    "also",
+    "just",
+    "about",
+    "into",
+    "than",
+    "then",
+    "well",
+    "yes",
+    "know",
+    "tell",
+    "said",
+    "say",
+    "get",
+    "got",
+    "let",
+    "make",
+    "made",
+    "take",
+    "come",
+    "go",
+    "see",
+    "look",
+    "use",
+    "like",
+    "time",
+    "way",
+    "now",
+    "last",
+    "first",
+    "long",
+    "little",
+    "own",
+    "old",
+    "right",
+    "big",
+    "high",
+    "new",
+    "next",
+    "early",
+    "contain",
+    "indicates",
+    "indicating",
+    "involves",
+    "another",
+    "abour",
+    "3rd",
+    "today",
+    "mentioned",
+    "popular",
+    "key",
+}
+
+
+def filter_concepts(concepts: list[str]) -> list[str]:
+    """
+    Remove stop words and low-quality concepts from extracted list.
+    Keeps only concepts that are:
+    - 2+ words (phrases), OR
+    - single words longer than 4 characters that aren't stop words
+    """
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for concept in concepts:
+        normalized = concept.strip().lower()
+        if not normalized:
+            continue
+        words = normalized.split()
+        if len(words) >= 2:
+            if normalized not in seen:
+                filtered.append(normalized)
+                seen.add(normalized)
+            continue
+        if len(normalized) > 4 and normalized not in STOP_WORDS and normalized not in seen:
+            filtered.append(normalized)
+            seen.add(normalized)
+    return filtered
 
 
 class OpenAIManager:
@@ -277,7 +444,7 @@ Latest user message:
             return []
 
         fallback_text = f"{user_message}\n{assistant_message}".strip()
-        fallback_concepts = self.extract_retrieval_cues(fallback_text)[:5]
+        fallback_concepts = filter_concepts(self.extract_retrieval_cues(fallback_text))[:5]
         if not self.client:
             return fallback_concepts
 
@@ -321,17 +488,14 @@ Do NOT include explanations, just the JSON array."""
                     return fallback_concepts
 
                 cleaned: list[str] = []
-                seen: set[str] = set()
                 for concept in parsed:
                     if not isinstance(concept, str):
                         continue
                     normalized = concept.lower().strip()
-                    if not normalized or normalized in seen:
+                    if not normalized:
                         continue
-                    seen.add(normalized)
                     cleaned.append(normalized)
-                    if len(cleaned) >= 5:
-                        break
+                cleaned = filter_concepts(cleaned)[:5]
                 return cleaned or fallback_concepts
             except Exception as exc:
                 is_rate_limited = self._is_rate_limit_error(exc)
@@ -347,6 +511,33 @@ Do NOT include explanations, just the JSON array."""
                 return fallback_concepts
 
         return fallback_concepts
+
+    async def get_embedding(self, text: str) -> list[float] | None:
+        normalized = text.strip()
+        if not normalized or not self.client:
+            return None
+
+        try:
+            response = self.client.embeddings.create(
+                model="text-embedding-3-small",
+                input=normalized,
+            )
+            if inspect.isawaitable(response):
+                response = await response
+
+            data = getattr(response, "data", None) or []
+            if not data:
+                return None
+
+            embedding = getattr(data[0], "embedding", None)
+            if embedding is None and isinstance(data[0], dict):
+                embedding = data[0].get("embedding")
+            if embedding is None:
+                return None
+
+            return [float(value) for value in embedding]
+        except Exception:
+            return None
 
     def generate_chat_reply(self, messages: list[dict[str, Any]], session_id: str) -> str:
         """Backward-compatible wrapper used by the existing FastAPI route."""

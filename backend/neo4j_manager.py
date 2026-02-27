@@ -8,6 +8,8 @@ from uuid import uuid4
 import os
 import re
 
+from openai_manager import STOP_WORDS, filter_concepts
+
 try:
     from neo4j import GraphDatabase
 except ImportError:  # pragma: no cover - dependency not installed yet
@@ -30,7 +32,11 @@ class Neo4jManager:
 
         if self.is_configured and GraphDatabase is not None:
             try:
-                self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+                self.driver = GraphDatabase.driver(
+                    self.uri,
+                    auth=(self.user, self.password),
+                    notifications_min_severity="OFF",
+                )
                 # AuraDB connection issues should not crash local development; fallback remains active.
                 self.driver.verify_connectivity()
             except Exception as exc:
@@ -111,12 +117,137 @@ class Neo4jManager:
             self._record_error("Neo4j connectivity check failed", exc)
             return False
 
+    def ensure_vector_index(self) -> bool:
+        if not self.driver:
+            return False
+
+        query = """
+        CREATE VECTOR INDEX `concept-embeddings` IF NOT EXISTS
+        FOR (c:Concept) ON (c.embedding)
+        OPTIONS {indexConfig: {`vector.dimensions`: 1536,
+                               `vector.similarity_function`: 'cosine'}}
+        """
+        try:
+            with self.driver.session() as session:
+                session.run(query).consume()
+            return True
+        except Exception as exc:
+            self._record_error("Failed to ensure Neo4j vector index", exc)
+            return False
+
+    def cleanup_noise_concepts(self) -> bool:
+        if not self.driver:
+            return False
+
+        query = """
+        MATCH (c:Concept)
+        WHERE size(c.name) <= 4
+           OR toLower(c.name) IN $stop_words
+        DETACH DELETE c
+        """
+        try:
+            with self.driver.session() as session:
+                session.run(query, stop_words=sorted(STOP_WORDS)).consume()
+            return True
+        except Exception as exc:
+            self._record_error("Failed to clean up noise concepts", exc)
+            return False
+
+    async def ensure_root_topic(self, session_id: str, root_name: str) -> None:
+        if not session_id or not root_name:
+            return
+
+        if self.driver:
+            query = """
+            MERGE (t:Topic {name: $root_name, session_id: $session_id})
+            ON CREATE SET t.is_root = true, t.created_at = timestamp()
+            MERGE (d:DeflectionPoint {
+                session_id: $session_id,
+                from_topic: 'ROOT',
+                to_topic: $root_name
+            })
+            ON CREATE SET
+                d.deflection_type = 'ROOT',
+                d.similarity_score = 1.0,
+                d.created_at = timestamp()
+            """
+            try:
+                with self.driver.session() as session:
+                    session.run(
+                        query,
+                        session_id=session_id,
+                        root_name=root_name,
+                    ).consume()
+            except Exception as exc:
+                self._record_error("Failed to ensure root topic in Neo4j", exc)
+                return
+
+        analysis = self._analysis.setdefault(session_id, {})
+        points = analysis.setdefault("deflection_points", [])
+        already_present = any(
+            str(existing.get("from_topic", "")).strip() == "ROOT"
+            and str(existing.get("to_topic", "")).strip() == root_name
+            for existing in points
+            if isinstance(existing, dict)
+        )
+        if not already_present:
+            points.append(
+                {
+                    "message_id": "",
+                    "from_topic": "ROOT",
+                    "to_topic": root_name,
+                    "deflection_type": "ROOT",
+                    "similarity_score": 1.0,
+                }
+            )
+
     def close(self) -> None:
         if self.driver:
             try:
                 self.driver.close()
             except Exception as exc:
                 self._record_error("Neo4j driver close failed", exc)
+
+    def _normalize_concept_payloads(
+        self,
+        concepts: list[str] | list[dict[str, Any]] | None,
+        *,
+        lowercase: bool = False,
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for concept in concepts or []:
+            embedding: list[float] | None = None
+            if isinstance(concept, dict):
+                concept_name = str(concept.get("name", "")).strip()
+                raw_embedding = concept.get("embedding")
+                if isinstance(raw_embedding, (list, tuple)):
+                    try:
+                        embedding = [float(value) for value in raw_embedding]
+                    except (TypeError, ValueError):
+                        embedding = None
+            else:
+                concept_name = str(concept).strip()
+
+            if lowercase:
+                concept_name = concept_name.lower()
+            filtered_names = filter_concepts([concept_name])
+            if not filtered_names:
+                continue
+            concept_name = filtered_names[0]
+            if concept_name in seen:
+                continue
+
+            seen.add(concept_name)
+            normalized.append(
+                {
+                    "name": concept_name,
+                    "embedding": embedding,
+                }
+            )
+
+        return normalized
 
     def store_message(
         self,
@@ -127,11 +258,13 @@ class Neo4jManager:
         message_id: str | None = None,
         timestamp: str | None = None,
         topic_name: str | None = None,
-        concepts: list[str] | None = None,
+        concepts: list[str] | list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         normalized_topic = topic_name or f"session:{session_id}"
-        concept_names = concepts if concepts is not None else self._extract_concepts(content)
-        concept_names = [c.strip() for c in concept_names if c and c.strip()]
+        concept_payloads = self._normalize_concept_payloads(
+            concepts if concepts is not None else self._extract_concepts(content)
+        )
+        concept_names = [payload["name"] for payload in concept_payloads]
 
         msg = {
             "id": message_id or str(uuid4()),
@@ -165,9 +298,18 @@ class Neo4jManager:
             """
             message_concepts_query = """
             MATCH (m:Message {id: $message_id})
-            UNWIND $concept_names AS concept_name
-            MERGE (c:Concept {name: concept_name})
+            UNWIND $concepts AS concept_data
+            MERGE (c:Concept {name: concept_data.name})
             MERGE (m)-[:DISCUSSES]->(c)
+            """
+            concept_embeddings_query = """
+            UNWIND $concepts AS concept_data
+            MATCH (c:Concept {name: concept_data.name})
+            WITH c, concept_data
+            WHERE concept_data.embedding IS NOT NULL
+            CALL db.create.setNodeVectorProperty(c, 'embedding', concept_data.embedding)
+            WITH c, concept_data
+            RETURN count(c) AS embedded_count
             """
             params = {
                 "id": msg["id"],
@@ -184,7 +326,11 @@ class Neo4jManager:
                         session.run(
                             message_concepts_query,
                             message_id=msg["id"],
-                            concept_names=msg["concepts"],
+                            concepts=concept_payloads,
+                        ).consume()
+                        session.run(
+                            concept_embeddings_query,
+                            concepts=concept_payloads,
                         ).consume()
             except Exception as exc:
                 # Fallback stays available for local development even if AuraDB is offline.
@@ -291,19 +437,18 @@ class Neo4jManager:
         """Compatibility alias for chat orchestration code."""
         return self.count_messages(session_id)
 
-    def add_concepts_to_message(self, message_id: str, concepts: list[str], session_id: str) -> None:
+    def add_concepts_to_message(
+        self,
+        message_id: str,
+        concepts: list[str] | list[dict[str, Any]],
+        session_id: str,
+    ) -> None:
         """
         Incrementally link extracted concepts to a specific message.
         Called for every chat exchange to avoid graph gaps between deep analyses.
         """
-        normalized_concepts: list[str] = []
-        seen: set[str] = set()
-        for concept in concepts:
-            concept_str = str(concept).lower().strip()
-            if not concept_str or concept_str in seen:
-                continue
-            seen.add(concept_str)
-            normalized_concepts.append(concept_str)
+        normalized_payloads = self._normalize_concept_payloads(concepts, lowercase=True)
+        normalized_concepts = [payload["name"] for payload in normalized_payloads]
 
         if not normalized_concepts:
             return
@@ -323,10 +468,23 @@ class Neo4jManager:
 
         query = """
         MATCH (m:Message {id: $message_id, session_id: $session_id})
-        UNWIND $concepts AS concept_name
-        MERGE (c:Concept {name: concept_name})
+        UNWIND $concepts AS concept_data
+        MERGE (c:Concept {name: concept_data.name})
         ON CREATE SET c.first_seen = timestamp()
         MERGE (m)-[:DISCUSSES]->(c)
+        """
+        embedding_query = """
+        UNWIND $concepts AS concept_data
+        MATCH (c:Concept {name: concept_data.name})
+        WITH c, concept_data
+        WHERE concept_data.embedding IS NOT NULL
+        CALL db.create.setNodeVectorProperty(c, 'embedding', concept_data.embedding)
+        WITH c, concept_data
+        RETURN count(c) AS embedded_count
+        """
+        mention_count_query = """
+        UNWIND $concepts AS concept_data
+        MATCH (c:Concept {name: concept_data.name})
         WITH DISTINCT c
         MATCH (c)<-[:DISCUSSES]-(related_message:Message)
         WITH c, count(DISTINCT related_message) AS msg_count
@@ -338,10 +496,83 @@ class Neo4jManager:
                     query,
                     message_id=message_id,
                     session_id=session_id,
-                    concepts=normalized_concepts,
+                    concepts=normalized_payloads,
+                ).consume()
+                session.run(
+                    embedding_query,
+                    concepts=normalized_payloads,
+                ).consume()
+                session.run(
+                    mention_count_query,
+                    concepts=normalized_payloads,
                 ).consume()
         except Exception as exc:
             self._record_error("Failed to incrementally add concepts to message", exc)
+
+    async def store_deflection_point(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        from_topic: str,
+        to_topic: str,
+        deflection_type: str,
+        similarity_score: float,
+    ) -> None:
+        point = {
+            "message_id": message_id,
+            "from_topic": from_topic,
+            "to_topic": to_topic,
+            "deflection_type": deflection_type,
+            "similarity_score": similarity_score,
+        }
+        analysis = self._analysis.setdefault(session_id, {})
+        points = analysis.setdefault("deflection_points", [])
+        already_present = any(
+            str(existing.get("message_id", "")).strip() == message_id
+            and str(existing.get("from_topic", "")).strip() == from_topic
+            and str(existing.get("to_topic", "")).strip() == to_topic
+            for existing in points
+            if isinstance(existing, dict)
+        )
+        if not already_present:
+            points.append(point)
+
+        if not self.driver:
+            return
+
+        query = """
+        MERGE (d:DeflectionPoint {
+            session_id: $session_id,
+            from_topic: $from_topic,
+            to_topic: $to_topic
+        })
+        ON CREATE SET
+            d.message_id = $message_id,
+            d.deflection_type = $deflection_type,
+            d.similarity_score = $similarity_score,
+            d.created_at = timestamp()
+        MERGE (from_t:Topic {name: $from_topic})
+        MERGE (to_t:Topic {name: $to_topic})
+        MERGE (from_t)-[:TRANSITIONS_TO {
+            via: $message_id,
+            type: $deflection_type,
+            score: $similarity_score
+        }]->(to_t)
+        """
+        try:
+            with self.driver.session() as session:
+                session.run(
+                    query,
+                    session_id=session_id,
+                    message_id=message_id,
+                    from_topic=from_topic,
+                    to_topic=to_topic,
+                    deflection_type=deflection_type,
+                    similarity_score=similarity_score,
+                ).consume()
+        except Exception as exc:
+            self._record_error("Failed to store deflection point in Neo4j", exc)
 
     def upsert_analysis(self, session_id: str, analysis: dict[str, Any]) -> None:
         self._analysis[session_id] = analysis

@@ -6,7 +6,7 @@ import re
 import time
 from typing import Any
 
-from openai_manager import OpenAIManager
+from openai_manager import OpenAIManager, filter_concepts
 
 
 class AnalysisAgent:
@@ -266,7 +266,8 @@ Conversation:
         if not isinstance(concepts, list):
             return []
 
-        normalized: list[dict[str, Any]] = []
+        normalized_names: list[str] = []
+        concept_metadata: dict[str, dict[str, Any]] = {}
         seen: set[str] = set()
         for item in concepts:
             if isinstance(item, str):
@@ -274,7 +275,8 @@ Conversation:
                 if not name or name in seen:
                     continue
                 seen.add(name)
-                normalized.append({"name": name})
+                normalized_names.append(name)
+                concept_metadata[name] = {"name": name}
                 continue
 
             if not isinstance(item, dict):
@@ -284,13 +286,19 @@ Conversation:
             if not name or name in seen:
                 continue
             seen.add(name)
+            normalized_names.append(name)
 
             concept: dict[str, Any] = {"name": name}
             if item.get("type"):
                 concept["type"] = str(item["type"]).strip()
             if isinstance(item.get("importance"), (int, float)):
                 concept["importance"] = int(item["importance"])
-            normalized.append(concept)
+            concept_metadata[name] = concept
+
+        filtered_names = filter_concepts(normalized_names)
+        normalized: list[dict[str, Any]] = []
+        for name in filtered_names:
+            normalized.append(concept_metadata[name])
         return normalized
 
     def _normalize_relationships(self, relationships: Any) -> list[dict[str, Any]]:
@@ -359,7 +367,7 @@ Conversation:
         self, messages: list[dict[str, Any]], session_id: str, *, reason: str
     ) -> dict[str, Any]:
         all_text = " ".join(str(m.get("content", "")) for m in messages)
-        top_terms = [term for term, _ in Counter(self._tokens(all_text)).most_common(10)]
+        top_terms = filter_concepts([term for term, _ in Counter(self._tokens(all_text)).most_common(10)])
 
         topic_name = self._infer_primary_topic(top_terms)
         topics = [{"name": topic_name, "message_ids": [m.get("id", "") for m in messages]}]
@@ -418,4 +426,3 @@ Conversation:
         if top_terms:
             return f"Concept Cluster: {top_terms[0]}"
         return "General Conversation"
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from analysis_agent import AnalysisAgent
+from deflection_detector import SemanticDeflectionDetector
 from neo4j_manager import Neo4jManager
 from openai_manager import OpenAIManager
 from search import SemanticSearchService
@@ -48,6 +50,59 @@ def _resolve_session_id(session_id: str | None) -> str | None:
     latest_message = all_messages[-1]
     resolved = latest_message.get("session_id")
     return str(resolved) if resolved else None
+
+
+async def _build_concept_payloads(
+    concept_names: list[str],
+    *,
+    lowercase: bool = False,
+    embedding_cache: dict[str, list[float] | None] | None = None,
+) -> list[dict[str, Any]]:
+    normalized_names: list[str] = []
+    seen: set[str] = set()
+    for concept_name in concept_names:
+        normalized = str(concept_name).strip()
+        if lowercase:
+            normalized = normalized.lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_names.append(normalized)
+
+    if not normalized_names:
+        return []
+
+    cache = embedding_cache if embedding_cache is not None else {}
+    missing_names = [name for name in normalized_names if name not in cache]
+    if missing_names:
+        embeddings = await asyncio.gather(
+            *(openai_manager.get_embedding(name) for name in missing_names)
+        )
+        for name, embedding in zip(missing_names, embeddings, strict=False):
+            cache[name] = embedding
+
+    return [
+        {
+            "name": name,
+            "embedding": cache.get(name),
+        }
+        for name in normalized_names
+    ]
+
+
+def _build_concept_payloads_sync(
+    concept_names: list[str],
+    *,
+    lowercase: bool = False,
+    embedding_cache: dict[str, list[float] | None] | None = None,
+) -> list[dict[str, Any]]:
+    return asyncio.run(
+        _build_concept_payloads(
+            concept_names,
+            lowercase=lowercase,
+            embedding_cache=embedding_cache,
+        )
+    )
 
 
 def _graph_snapshot_from_neo4j(session_id: str, message_limit: int = 500) -> list[dict[str, Any]] | None:
@@ -104,193 +159,190 @@ def _concept_relationships_from_neo4j(session_id: str, edge_limit: int = 500) ->
         return []
 
 
+def _deflection_points_from_neo4j(session_id: str) -> list[dict[str, Any]]:
+    if not neo4j_manager.driver:
+        return []
+
+    query = """
+    MATCH (d:DeflectionPoint {session_id: $session_id})
+    RETURN
+      d.message_id AS message_id,
+      d.from_topic AS from_topic,
+      d.to_topic AS to_topic,
+      d.deflection_type AS deflection_type,
+      d.similarity_score AS similarity_score,
+      d.created_at AS created_at
+    ORDER BY d.created_at ASC
+    """
+    try:
+        with neo4j_manager.driver.session() as session:
+            return session.run(query, session_id=session_id).data()
+    except Exception:
+        return []
+
+
 def _build_graph_response(session_id: str, *, message_limit: int = 500) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
-    node_seen: set[str] = set()
-    edge_seen: set[tuple[str, str, str]] = set()
+    message_count = neo4j_manager.get_message_count(session_id)
+    source = "neo4j" if neo4j_manager.driver else "memory-fallback"
+    root_topic = "General"
 
-    def add_node(node_id: str, node_type: str, label: str, properties: dict[str, Any] | None = None) -> None:
-        if not node_id or node_id in node_seen:
-            return
-        node_seen.add(node_id)
-        nodes.append(
-            {
-                "id": node_id,
-                "type": node_type,
-                "label": label,
-                "properties": properties or {},
-            }
-        )
-
-    def add_edge(source: str, target: str, edge_type: str, properties: dict[str, Any] | None = None) -> None:
-        if not source or not target:
-            return
-        key = (source, target, edge_type)
-        if key in edge_seen:
-            return
-        edge_seen.add(key)
-        edges.append(
-            {
-                "source": source,
-                "target": target,
-                "type": edge_type,
-                "properties": properties or {},
-            }
-        )
-
-    graph_rows = _graph_snapshot_from_neo4j(session_id, message_limit=message_limit)
-    source = "neo4j-live" if graph_rows is not None else "memory-fallback"
-
-    if graph_rows is not None:
-        for row in graph_rows:
-            message_id = str(row.get("id", ""))
-            add_node(
-                message_id,
-                "Message",
-                row.get("role", "message"),
-                {
-                    "session_id": row.get("session_id"),
-                    "role": row.get("role"),
-                    "content": row.get("content"),
-                    "timestamp": row.get("timestamp"),
-                },
-            )
-
-            for topic_name in row.get("topics", []) or []:
-                if not topic_name:
-                    continue
-                topic_node_id = f"topic:{topic_name}"
-                add_node(topic_node_id, "Topic", str(topic_name), {"name": topic_name})
-                add_edge(message_id, topic_node_id, "PART_OF")
-
-            for concept_name in row.get("concepts", []) or []:
-                if not concept_name:
-                    continue
-                concept_node_id = f"concept:{str(concept_name).lower()}"
-                add_node(concept_node_id, "Concept", str(concept_name), {"name": concept_name})
-                add_edge(message_id, concept_node_id, "DISCUSSES")
-
-        for rel in _concept_relationships_from_neo4j(session_id):
-            source_name = str(rel.get("source", "")).strip()
-            target_name = str(rel.get("target", "")).strip()
-            rel_type = str(rel.get("type", "related")).strip() or "related"
-            if not source_name or not target_name:
-                continue
-            source_id = f"concept:{source_name.lower()}"
-            target_id = f"concept:{target_name.lower()}"
-            add_node(source_id, "Concept", source_name, {"name": source_name})
-            add_node(target_id, "Concept", target_name, {"name": target_name})
-            add_edge(source_id, target_id, "RELATES_TO", {"type": rel_type})
-    else:
-        messages = neo4j_manager.get_all_messages(session_id)
-        for msg in messages:
-            message_id = str(msg.get("id", ""))
-            add_node(
-                message_id,
-                "Message",
-                str(msg.get("role", "message")),
-                {
-                    "session_id": session_id,
-                    "role": msg.get("role"),
-                    "content": msg.get("content"),
-                    "timestamp": msg.get("timestamp"),
-                },
-            )
-
-            topic_name = msg.get("topic_name")
-            if isinstance(topic_name, str) and topic_name:
-                topic_node_id = f"topic:{topic_name}"
-                add_node(topic_node_id, "Topic", topic_name, {"name": topic_name})
-                add_edge(message_id, topic_node_id, "PART_OF")
-
-            for concept_name in msg.get("concepts", []) or []:
-                concept_str = str(concept_name).strip()
-                if not concept_str:
-                    continue
-                concept_node_id = f"concept:{concept_str.lower()}"
-                add_node(concept_node_id, "Concept", concept_str, {"name": concept_str})
-                add_edge(message_id, concept_node_id, "DISCUSSES")
-
-    analysis = neo4j_manager.get_analysis(session_id) or {}
-
-    for concept in analysis.get("concepts", []):
-        concept_name = str(concept.get("name", "")).strip()
-        if not concept_name:
-            continue
-        add_node(
-            f"concept:{concept_name.lower()}",
-            "Concept",
-            concept_name,
-            {k: v for k, v in concept.items() if k != "name"},
-        )
-
-    for topic in analysis.get("topics", []):
-        topic_name = str(topic.get("name", "")).strip()
-        if not topic_name:
-            continue
-        topic_node_id = f"topic:{topic_name}"
-        add_node(topic_node_id, "Topic", topic_name, {"name": topic_name})
-        for message_id in topic.get("message_ids", []) or []:
-            add_edge(str(message_id), topic_node_id, "PART_OF")
-
-    for rel in analysis.get("relationships", []):
-        source_name = str(rel.get("source", "")).strip()
-        target_name = str(rel.get("target", "")).strip()
-        rel_type = str(rel.get("type", "related")).strip() or "related"
-        if not source_name or not target_name:
-            continue
-        source_id = f"concept:{source_name.lower()}"
-        target_id = f"concept:{target_name.lower()}"
-        add_node(source_id, "Concept", source_name, {"name": source_name})
-        add_node(target_id, "Concept", target_name, {"name": target_name})
-        add_edge(source_id, target_id, "RELATES_TO", {"type": rel_type})
-
-    for point in analysis.get("deflection_points", []) or []:
-        message_id = str(point.get("message_id", "")).strip()
-        from_topic = str(point.get("from_topic", "unknown")).strip() or "unknown"
-        to_topic = str(point.get("to_topic", "unknown")).strip() or "unknown"
-        deflection_node_id = f"deflection:{session_id}:{message_id or len(nodes)}"
-        add_node(
-            deflection_node_id,
-            "DeflectionPoint",
-            "Deflection",
-            {
-                "message_id": message_id,
-                "from_topic": from_topic,
-                "to_topic": to_topic,
-                "signal_words": point.get("signal_words", []),
-                "reason": point.get("reason"),
+    if not neo4j_manager.driver:
+        return {
+            "session_id": session_id,
+            "source": source,
+            "tree": {
+                "nodes": [],
+                "edges": [],
+                "root": root_topic,
             },
+            "message_count": message_count,
+            "deflection_count": 0,
+        }
+
+    query = """
+    MATCH (d:DeflectionPoint {session_id: $session_id})
+    RETURN d.from_topic AS from_topic,
+           d.to_topic AS to_topic,
+           d.deflection_type AS type,
+           d.similarity_score AS score,
+           d.created_at AS created_at
+    ORDER BY d.created_at ASC
+    """
+    try:
+        with neo4j_manager.driver.session() as session:
+            rows = session.run(query, session_id=session_id).data()
+    except Exception:
+        rows = []
+        source = "memory-fallback"
+
+    if not rows:
+        return {
+            "session_id": session_id,
+            "source": source,
+            "tree": {
+                "nodes": [],
+                "edges": [],
+                "root": root_topic,
+            },
+            "message_count": message_count,
+            "deflection_count": 0,
+        }
+
+    topic_nodes: dict[str, dict[str, Any]] = {}
+    tree_edges: list[dict[str, Any]] = []
+    children_by_parent: dict[str, list[str]] = {}
+    ordered_topics: list[str] = []
+    seen_edges: set[tuple[str, str, str, float]] = set()
+
+    def ensure_topic(topic_name: str) -> None:
+        if not topic_name or topic_name in topic_nodes:
+            return
+        topic_nodes[topic_name] = {
+            "id": topic_name,
+            "label": topic_name,
+            "depth": 0,
+            "type": "BRANCH",
+        }
+        ordered_topics.append(topic_name)
+
+    first_row = rows[0] if rows else {}
+    first_from_topic = str(first_row.get("from_topic", "")).strip()
+    first_to_topic = str(first_row.get("to_topic", "")).strip()
+    first_type = str(first_row.get("type", "")).strip().upper()
+    if first_from_topic == "ROOT" or first_type == "ROOT":
+        root_topic = first_to_topic or root_topic
+    else:
+        root_topic = first_from_topic or first_to_topic or root_topic
+    ensure_topic(root_topic)
+    topic_nodes[root_topic]["type"] = "ROOT"
+
+    for row in rows:
+        from_topic = str(row.get("from_topic", "")).strip()
+        to_topic = str(row.get("to_topic", "")).strip()
+        edge_type = str(row.get("type", "BRANCH")).strip().upper() or "BRANCH"
+        if edge_type == "ROOT" or from_topic == "ROOT":
+            if to_topic:
+                ensure_topic(to_topic)
+            continue
+        if edge_type not in {"EXTENSION", "BRANCH", "SYNTHESIS"}:
+            edge_type = "BRANCH"
+
+        try:
+            score = float(row.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+
+        if not from_topic or not to_topic:
+            continue
+
+        ensure_topic(from_topic)
+        ensure_topic(to_topic)
+
+        if from_topic != root_topic and topic_nodes[from_topic]["type"] == "BRANCH":
+            topic_nodes[from_topic]["type"] = "EXTENSION"
+        if to_topic != root_topic:
+            topic_nodes[to_topic]["type"] = edge_type
+
+        edge_key = (from_topic, to_topic, edge_type, round(score, 6))
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
+        tree_edges.append(
+            {
+                "from": from_topic,
+                "to": to_topic,
+                "type": edge_type,
+                "score": score,
+            }
         )
-        if message_id:
-            add_edge(message_id, deflection_node_id, "TRIGGERED")
+        children_by_parent.setdefault(from_topic, []).append(to_topic)
 
-        from_topic_id = f"topic:{from_topic}"
-        to_topic_id = f"topic:{to_topic}"
-        add_node(from_topic_id, "Topic", from_topic, {"name": from_topic})
-        add_node(to_topic_id, "Topic", to_topic, {"name": to_topic})
-        add_edge(from_topic_id, to_topic_id, "TRANSITIONS_TO", {"via": deflection_node_id})
+    depths: dict[str, int] = {root_topic: 0}
+    queue: list[str] = [root_topic]
+    while queue:
+        parent = queue.pop(0)
+        parent_depth = depths[parent]
+        for child in children_by_parent.get(parent, []):
+            if child in depths:
+                continue
+            depths[child] = parent_depth + 1
+            queue.append(child)
 
-    counts = {
-        "messages": sum(1 for node in nodes if node["type"] == "Message"),
-        "topics": sum(1 for node in nodes if node["type"] == "Topic"),
-        "concepts": sum(1 for node in nodes if node["type"] == "Concept"),
-        "deflection_points": sum(1 for node in nodes if node["type"] == "DeflectionPoint"),
-        "edges": len(edges),
-    }
+    for topic_name in ordered_topics:
+        if topic_name in depths:
+            continue
+        candidate_depths = [
+            depths[edge["from"]] + 1
+            for edge in tree_edges
+            if edge["to"] == topic_name and edge["from"] in depths
+        ]
+        if candidate_depths:
+            depths[topic_name] = min(candidate_depths)
+        else:
+            depths[topic_name] = max(depths.values(), default=0) + 1
+
+    tree_nodes = [
+        {
+            "id": topic_name,
+            "label": node["label"],
+            "depth": depths.get(topic_name, 0),
+            "type": "ROOT" if topic_name == root_topic else node["type"],
+        }
+        for topic_name, node in topic_nodes.items()
+    ]
+    tree_nodes.sort(key=lambda node: (int(node.get("depth", 0)), str(node.get("label", "")).lower()))
 
     return {
         "session_id": session_id,
-        "nodes": nodes,
-        "edges": edges,
-        "counts": counts,
-        "analysis_available": bool(analysis),
         "source": source,
-        "notes": [
-            "Graph combines stored message/topic/concept links with consolidation output (relationships/deflection points).",
-            "Run /api/analyze (or reach the 10-message auto-trigger) to enrich RELATES_TO and TRANSITIONS_TO edges.",
-        ],
+        "tree": {
+            "nodes": tree_nodes,
+            "edges": tree_edges,
+            "root": root_topic,
+        },
+        "message_count": message_count,
+        "deflection_count": len(tree_edges),
     }
 
 
@@ -448,6 +500,8 @@ neo4j_manager = Neo4jManager()
 openai_manager = OpenAIManager()
 analysis_agent = AnalysisAgent(openai_manager)
 semantic_search = SemanticSearchService(neo4j_manager, openai_manager)
+deflection_detector = SemanticDeflectionDetector(neo4j_manager, openai_manager)
+_session_current_topic: dict[str, str] = {}
 
 
 app = FastAPI(
@@ -493,14 +547,36 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.on_event("startup")
+def _startup() -> None:
+    if neo4j_manager.ensure_vector_index():
+        print("Vector index ensured.")
+    if neo4j_manager.cleanup_noise_concepts():
+        print("Cleaned up noise concepts.")
+
+
 @app.post("/api/chat")
-def chat(request: ChatRequest) -> dict[str, Any]:
+async def chat(request: ChatRequest) -> dict[str, Any]:
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-    user_message = neo4j_manager.store_message(request.session_id, "user", request.message.strip())
-    recent_messages = neo4j_manager.get_recent_messages(request.session_id, limit=20)
-    research_detection = _detect_research_request(request.message.strip(), recent_messages)
+    session_id = request.session_id
+    stripped_message = request.message.strip()
+    embedding_cache: dict[str, list[float] | None] = {}
+    current_topic = _session_current_topic.get(session_id, "General")
+
+    user_concepts = await _build_concept_payloads(
+        neo4j_manager._extract_concepts(stripped_message),  # noqa: SLF001 - preserves existing concept extraction path
+        embedding_cache=embedding_cache,
+    )
+    user_message = neo4j_manager.store_message(
+        session_id,
+        "user",
+        stripped_message,
+        concepts=user_concepts,
+    )
+    recent_messages = neo4j_manager.get_recent_messages(session_id, limit=20)
+    research_detection = _detect_research_request(stripped_message, recent_messages)
     research_context: dict[str, Any] | None = None
     enriched_messages = list(recent_messages)
 
@@ -532,28 +608,64 @@ def chat(request: ChatRequest) -> dict[str, Any]:
     if research_context and research_context.get("used"):
         reply = _append_research_context_to_reply(reply, research_context)
 
-    assistant_message = neo4j_manager.store_message(request.session_id, "assistant", reply)
+    assistant_concepts = await _build_concept_payloads(
+        neo4j_manager._extract_concepts(reply),  # noqa: SLF001 - preserves existing concept extraction path
+        embedding_cache=embedding_cache,
+    )
+    assistant_message = neo4j_manager.store_message(
+        session_id,
+        "assistant",
+        reply,
+        concepts=assistant_concepts,
+    )
 
     # Tier 1: quick concept extraction on every exchange (immediate encoding).
     concepts_extracted: list[str] = []
     quick_extraction_error: str | None = None
     try:
-        concepts_extracted = openai_manager.extract_concepts_quick(request.message.strip(), reply)
+        concepts_extracted = openai_manager.extract_concepts_quick(stripped_message, reply)
         if concepts_extracted:
+            quick_concept_payloads = await _build_concept_payloads(
+                concepts_extracted,
+                lowercase=True,
+                embedding_cache=embedding_cache,
+            )
             neo4j_manager.add_concepts_to_message(
                 message_id=user_message["id"],
-                concepts=concepts_extracted,
-                session_id=request.session_id,
+                concepts=quick_concept_payloads,
+                session_id=session_id,
             )
             neo4j_manager.add_concepts_to_message(
                 message_id=assistant_message["id"],
-                concepts=concepts_extracted,
-                session_id=request.session_id,
+                concepts=quick_concept_payloads,
+                session_id=session_id,
             )
             print(f"Extracted {len(concepts_extracted)} quick concepts: {concepts_extracted}")
     except Exception as exc:  # pragma: no cover - defensive runtime guard
         quick_extraction_error = str(exc)
         print(f"Quick concept extraction failed: {exc}")
+
+    msg_count = neo4j_manager.get_message_count(session_id)
+    if msg_count <= 2:
+        await neo4j_manager.ensure_root_topic(session_id, "General")
+
+    deflection_result = await deflection_detector.detect(
+        session_id=session_id,
+        new_message_content=stripped_message,
+        new_concepts=concepts_extracted,
+        current_topic_label=current_topic,
+    )
+    if deflection_result["type"] in ("BRANCH", "SYNTHESIS"):
+        await neo4j_manager.store_deflection_point(
+            session_id=session_id,
+            message_id=user_message["id"],
+            from_topic=deflection_result["parent_topic"],
+            to_topic=deflection_result["topic_label"],
+            deflection_type=deflection_result["type"],
+            similarity_score=deflection_result["similarity_score"],
+        )
+    current_topic = str(deflection_result.get("topic_label", current_topic)).strip() or current_topic
+    _session_current_topic[session_id] = current_topic
 
     stored_research_sources: list[dict[str, Any]] = []
     if research_context and research_context.get("used"):
@@ -563,7 +675,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
             )
             linked_concepts = extracted.get("concepts", []) if isinstance(extracted, dict) else []
             stored_research_sources = neo4j_manager.store_research_sources(
-                request.session_id,
+                session_id,
                 message_id=assistant_message["id"],
                 sources=research_context.get("sources", []) or [],
                 concepts=linked_concepts,
@@ -574,7 +686,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - defensive runtime guard
             research_context["storage_error"] = str(exc)
 
-    total_messages = neo4j_manager.get_message_count(request.session_id)
+    total_messages = neo4j_manager.get_message_count(session_id)
     consolidation_due = total_messages > 0 and total_messages % 10 == 0
     consolidation_ran = False
     consolidation_summary: dict[str, Any] | None = None
@@ -584,9 +696,9 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         print(f"Triggering deep analysis at {total_messages} messages...")
         try:
             # Consolidation uses full conversation (long-term memory), not the working-memory window.
-            full_conversation = neo4j_manager.get_all_messages(request.session_id)
-            analysis = analysis_agent.analyze_conversation(full_conversation, request.session_id)
-            neo4j_manager.upsert_analysis(request.session_id, analysis)
+            full_conversation = neo4j_manager.get_all_messages(session_id)
+            analysis = analysis_agent.analyze_conversation(full_conversation, session_id)
+            neo4j_manager.upsert_analysis(session_id, analysis)
             consolidation_ran = True
             consolidation_summary = {
                 "analysis_mode": analysis.get("analysis_mode"),
@@ -606,7 +718,7 @@ def chat(request: ChatRequest) -> dict[str, Any]:
             print(f"Deep analysis failed: {exc}")
 
     return {
-        "session_id": request.session_id,
+        "session_id": session_id,
         "user_message_id": user_message["id"],
         "message_id": assistant_message["id"],
         "response": reply,
@@ -625,9 +737,15 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         "research_hint": bool(research_detection["is_research"]),
         "research_detection": research_detection,
         "research_context": research_context,
+        "deflection": {
+            "type": deflection_result["type"],
+            "topic_label": deflection_result["topic_label"],
+            "similarity_score": deflection_result["similarity_score"],
+        },
         "notes": [
             "Chat path uses working memory (last ~20 messages).",
             "Quick concept extraction runs on every exchange for incremental graph updates.",
+            "Real-time semantic deflection detection updates the session topic state and persists BRANCH/SYNTHESIS transitions.",
             "Long-term memory consolidation runs automatically every 10 messages using the FULL conversation.",
             "You can also call /api/analyze manually to force consolidation.",
             "Research questions can trigger Tavily search; sources are stored as Neo4j Source nodes linked to concepts.",
