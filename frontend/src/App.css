@@ -24,6 +24,11 @@
   min-height: 0;
 }
 
+.hero-copy {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .eyebrow {
   margin: 0;
   font-size: 0.8rem;
@@ -44,20 +49,27 @@
   color: var(--soft-text);
 }
 
-.header-badges {
-  display: grid;
-  gap: 0.5rem;
+.hero-callout {
   align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 1rem 1.1rem;
+  background:
+    radial-gradient(circle at 18% 18%, var(--accent-warm-soft), transparent 52%),
+    radial-gradient(circle at 82% 78%, var(--accent-cool-soft), transparent 48%),
+    rgba(255, 248, 240, 0.03);
+  display: grid;
+  gap: 0.35rem;
 }
 
-.header-badges span {
-  padding: 0.65rem 0.8rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.04);
+.hero-callout strong {
+  font-size: 0.95rem;
+}
+
+.hero-callout p {
+  margin: 0;
   color: var(--soft-text);
   font-size: 0.9rem;
-  text-align: center;
 }
 
 .app-grid {
@@ -72,9 +84,9 @@
 .panel {
   border: 1px solid var(--border);
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+  background: linear-gradient(180deg, rgba(255, 253, 249, 0.92), rgba(246, 237, 226, 0.88));
   backdrop-filter: blur(8px);
-  box-shadow: 0 10px 30px rgba(8, 12, 22, 0.2);
+  box-shadow: 0 18px 38px rgba(123, 88, 57, 0.12);
   min-height: 0;
   height: 100%;
   overflow-x: hidden;
@@ -97,7 +109,7 @@
   padding: 0.35rem 0.55rem;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(16, 22, 36, 0.85);
+  background: rgba(249, 242, 233, 0.96);
   color: var(--muted-text);
   font-size: 0.78rem;
 }
@@ -111,36 +123,49 @@
   overflow-x: hidden;
 }
 
-.telemetry-grid {
+.composer-guide {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.6rem;
+  gap: 0.65rem;
   padding: 0.5rem 1rem 0.8rem;
 }
 
-.telemetry-card {
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.55rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(252, 246, 239, 0.92);
+}
+
+.status-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--accent-cool);
+  box-shadow: 0 0 0 4px rgba(111, 155, 141, 0.16);
+}
+
+.status-dot.busy {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(217, 143, 92, 0.16);
+}
+
+.prompt-suggestions {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.prompt-suggestions span {
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(12, 18, 29, 0.7);
-  padding: 0.7rem;
-  display: grid;
-  gap: 0.25rem;
-}
-
-.telemetry-card span {
-  font-size: 0.75rem;
+  background: rgba(255, 248, 241, 0.84);
+  padding: 0.65rem 0.75rem;
+  font-size: 0.85rem;
   color: var(--muted-text);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.telemetry-card strong {
-  font-size: 0.9rem;
-}
-
-.telemetry-card.alert {
-  border-color: rgba(255, 172, 78, 0.5);
-  background: rgba(84, 46, 8, 0.32);
 }
 
 .chat-log {
@@ -194,16 +219,16 @@
 
 .chat-bubble.user {
   margin-left: auto;
-  background: linear-gradient(180deg, rgba(54, 90, 182, 0.35), rgba(38, 53, 92, 0.45));
+  background: linear-gradient(180deg, rgba(235, 182, 149, 0.72), rgba(211, 136, 96, 0.62));
 }
 
 .chat-bubble.assistant {
-  background: linear-gradient(180deg, rgba(19, 35, 56, 0.65), rgba(11, 21, 36, 0.8));
+  background: linear-gradient(180deg, rgba(255, 251, 246, 0.96), rgba(244, 235, 225, 0.92));
 }
 
 .chat-bubble-highlight {
-  outline: 2px solid rgba(255, 196, 85, 0.8);
-  box-shadow: 0 0 0 3px rgba(255, 196, 85, 0.18);
+  outline: 2px solid rgba(232, 187, 121, 0.9);
+  box-shadow: 0 0 0 3px rgba(232, 187, 121, 0.22);
 }
 
 .chat-form {
@@ -211,7 +236,7 @@
   border-top: 1px solid rgba(255, 255, 255, 0.05);
   position: sticky;
   bottom: 0;
-  background: linear-gradient(180deg, rgba(10, 14, 23, 0.96), rgba(10, 14, 23, 0.98));
+  background: linear-gradient(180deg, rgba(248, 240, 232, 0.96), rgba(243, 233, 223, 0.98));
   z-index: 2;
 }
 
@@ -221,14 +246,14 @@
   min-height: 82px;
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(10, 14, 23, 0.9);
+  background: rgba(255, 252, 247, 0.96);
   color: var(--text);
   padding: 0.75rem;
   font: inherit;
 }
 
 .chat-form textarea:focus {
-  outline: 2px solid rgba(114, 189, 255, 0.35);
+  outline: 2px solid rgba(111, 155, 141, 0.35);
   outline-offset: 1px;
 }
 
@@ -253,10 +278,10 @@
 
 .chat-actions button {
   border-radius: 999px;
-  border: 1px solid rgba(114, 189, 255, 0.35);
+  border: 1px solid rgba(217, 143, 92, 0.42);
   padding: 0.7rem 1rem;
-  background: linear-gradient(180deg, #224f9d, #1c2f57);
-  color: white;
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  color: #fffaf5;
   font-weight: 600;
 }
 
@@ -274,7 +299,7 @@
 .graph-refresh-btn {
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(11, 17, 28, 0.85);
+  background: rgba(249, 242, 233, 0.96);
   color: var(--soft-text);
   padding: 0.45rem 0.8rem;
   font-size: 0.85rem;
@@ -297,7 +322,7 @@
 .graph-counts span {
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(11, 17, 28, 0.72);
+  background: rgba(251, 244, 236, 0.9);
   padding: 0.35rem 0.6rem;
   font-size: 0.78rem;
   color: var(--soft-text);
@@ -312,7 +337,7 @@
   margin: 0.7rem 1rem 0;
   border-radius: 12px;
   border: 1px dashed var(--border);
-  background: rgba(10, 15, 24, 0.55);
+  background: rgba(247, 239, 230, 0.84);
   padding: 0.8rem;
   color: var(--soft-text);
 }
@@ -340,7 +365,7 @@
 .tree-topic {
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(10, 15, 24, 0.72);
+  background: rgba(250, 243, 235, 0.92);
   padding: 0.45rem;
   position: relative;
   overflow: clip;
@@ -358,7 +383,7 @@
   height: 1.9rem;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--soft-text);
   padding: 0;
 }
@@ -371,13 +396,13 @@
   gap: 0.35rem;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.58);
   color: var(--text);
   padding: 0.45rem 0.55rem;
 }
 
 .tree-node-btn:hover:not(:disabled) {
-  border-color: rgba(114, 189, 255, 0.28);
+  border-color: rgba(111, 155, 141, 0.36);
 }
 
 .tree-node-btn:disabled {
@@ -386,24 +411,24 @@
 }
 
 .tree-node-btn.topic {
-  background: rgba(124, 214, 151, 0.08);
+  background: rgba(111, 155, 141, 0.12);
 }
 
 .tree-node-btn.concept {
-  background: rgba(114, 189, 255, 0.06);
+  background: rgba(232, 187, 121, 0.08);
 }
 
 .tree-node-btn.message {
-  background: rgba(255, 206, 122, 0.05);
+  background: rgba(217, 143, 92, 0.08);
 }
 
 .tree-node-btn.deflection {
-  background: rgba(255, 172, 78, 0.08);
+  background: rgba(194, 100, 56, 0.12);
 }
 
 .tree-node-btn.selected {
-  border-color: rgba(255, 196, 85, 0.45);
-  box-shadow: 0 0 0 2px rgba(255, 196, 85, 0.12);
+  border-color: rgba(232, 187, 121, 0.5);
+  box-shadow: 0 0 0 2px rgba(232, 187, 121, 0.14);
 }
 
 .tree-meta {
@@ -548,7 +573,7 @@
 .graph-principles > div {
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(11, 17, 28, 0.72);
+  background: rgba(251, 244, 236, 0.9);
   padding: 0.8rem;
 }
 
@@ -576,7 +601,7 @@
 .schema-card {
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(10, 15, 24, 0.72);
+  background: rgba(250, 243, 235, 0.92);
   padding: 0.8rem;
 }
 
@@ -584,7 +609,7 @@
   margin: 0.85rem 1rem 0;
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(10, 15, 24, 0.72);
+  background: rgba(250, 243, 235, 0.92);
   padding: 0.8rem;
 }
 
@@ -772,7 +797,7 @@ button.deflection-point-visual {
   padding: 0.8rem;
   border-radius: 12px;
   border: 1px solid rgba(124, 214, 151, 0.3);
-  background: rgba(124, 214, 151, 0.08);
+  background: rgba(111, 155, 141, 0.12);
 }
 
 .topic-before .tree-node-btn,
@@ -932,9 +957,7 @@ button.deflection-point-visual {
     min-height: 0;
   }
 
-  .telemetry-grid {
-    grid-template-columns: 1fr;
-  }
+  
 
   .chat-bubble {
     max-width: 100%;
@@ -979,3 +1002,6 @@ button.deflection-point-visual {
     animation: none !important;
   }
 }
+
+
+

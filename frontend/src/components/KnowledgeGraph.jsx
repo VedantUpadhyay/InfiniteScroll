@@ -304,8 +304,8 @@ export default function KnowledgeGraph() {
     <section className="panel panel-graph" aria-labelledby="graph-heading">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Long-Term Memory</p>
-          <h2 id="graph-heading">Knowledge Graph</h2>
+          <p className="eyebrow">Stored Memory</p>
+          <h2 id="graph-heading">Memory Map</h2>
         </div>
         <button
           type="button"
@@ -318,7 +318,7 @@ export default function KnowledgeGraph() {
           }}
           disabled={isLoading}
         >
-          {isLoading ? 'Refreshing…' : 'Refresh'}
+          {isLoading ? 'Updating...' : 'Update Map'}
         </button>
       </div>
 
@@ -330,7 +330,7 @@ export default function KnowledgeGraph() {
 
       {graphData?.session_id ? (
         <div className="graph-summary">
-          <span>Session: {String(graphData.session_id).slice(0, 8)}…</span>
+          <span>Session: {String(graphData.session_id).slice(0, 8)}...</span>
           <span>Source: {String(graphData.source ?? 'neo4j')}</span>
           <span>Root: {view.root}</span>
         </div>
@@ -340,7 +340,7 @@ export default function KnowledgeGraph() {
 
       {!error && !hasTree && !isLoading ? (
         <div className="graph-empty">
-          <p>Start chatting — your memory map will appear here</p>
+          <p>Start chatting and your memory map will appear here.</p>
         </div>
       ) : null}
 
@@ -443,3 +443,4 @@ export default function KnowledgeGraph() {
     </section>
   )
 }
+

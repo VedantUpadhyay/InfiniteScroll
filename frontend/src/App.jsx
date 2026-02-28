@@ -6,18 +6,16 @@ function App() {
   return (
     <div className="mindchat-app">
       <header className="app-header">
-        <div>
-          <p className="eyebrow">Autonomous Agents Hackathon • 7-Day Sprint</p>
+        <div className="hero-copy">
+          <p className="eyebrow">Vague recall, recovered</p>
           <h1>MindChat</h1>
           <p className="subtitle">
-            A Tip-of-the-Tongue assistant built on cognitive science: retrieval cues, chunking, and
-            a Neo4j semantic memory graph.
+            Recover what you meant, even when you cannot remember the exact words.
           </p>
         </div>
-        <div className="header-badges" aria-label="Core architecture badges">
-          <span>OpenAI = Working Memory</span>
-          <span>Neo4j = Long-Term Memory</span>
-          <span>Tavily = Research Augmentation</span>
+        <div className="hero-callout">
+          <strong>Built for tip-of-the-tongue moments</strong>
+          <p>Use fragments, scenes, numbers, and related ideas instead of exact keywords.</p>
         </div>
       </header>
 

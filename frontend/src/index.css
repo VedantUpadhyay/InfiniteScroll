@@ -2,18 +2,25 @@
   font-family: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #f4f7fb;
-  background: #060a12;
+  color: #3d2e23;
+  background: #f5ede2;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --bg: #060a12;
-  --bg-elevated: #0d1321;
-  --text: #f4f7fb;
-  --soft-text: #d8e1f2;
-  --muted-text: #9db0cd;
-  --border: rgba(199, 213, 235, 0.15);
+  --bg: #f5ede2;
+  --bg-elevated: #fbf6ef;
+  --panel: rgba(255, 250, 244, 0.84);
+  --panel-strong: rgba(251, 244, 235, 0.94);
+  --text: #3d2e23;
+  --soft-text: #654d3b;
+  --muted-text: #8d715b;
+  --border: rgba(191, 138, 91, 0.22);
+  --accent: #cc7a4b;
+  --accent-strong: #a85834;
+  --accent-cool: #7e9f93;
+  --accent-cool-soft: rgba(126, 159, 147, 0.16);
+  --accent-warm-soft: rgba(204, 122, 75, 0.14);
 }
 
 * {
@@ -33,10 +40,10 @@ body {
   min-width: 320px;
   color: var(--text);
   background:
-    radial-gradient(circle at 12% 15%, rgba(114, 189, 255, 0.16), transparent 42%),
-    radial-gradient(circle at 88% 20%, rgba(124, 214, 151, 0.12), transparent 46%),
-    radial-gradient(circle at 50% 92%, rgba(255, 174, 99, 0.08), transparent 48%),
-    linear-gradient(180deg, #060a12, #090f1b 55%, #070b13);
+    radial-gradient(circle at 10% 12%, rgba(204, 122, 75, 0.18), transparent 34%),
+    radial-gradient(circle at 84% 18%, rgba(126, 159, 147, 0.14), transparent 36%),
+    radial-gradient(circle at 58% 88%, rgba(225, 188, 141, 0.18), transparent 40%),
+    linear-gradient(180deg, #f7f0e7, #f2e6d8 52%, #efe1d2);
 }
 
 a {

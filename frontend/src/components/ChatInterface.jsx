@@ -16,7 +16,7 @@ export default function ChatInterface() {
       id: 'welcome',
       role: 'assistant',
       content:
-        'MindChat is ready. Describe what you vaguely remember (concepts, fragments, numbers, related ideas), and I will use retrieval cues instead of exact keywords.',
+        'Start with fragments. I can work from scenes, concepts, numbers, and related ideas.',
     },
   ])
   const [input, setInput] = useState('')
@@ -76,13 +76,12 @@ export default function ChatInterface() {
     setError('')
     setIsSending(true)
 
-    // Backend stores both user + assistant messages, so each chat call adds 2.
     const projectedTotalMessages = telemetry.totalMessages + 2
     const willBuildKnowledgeGraph =
       projectedTotalMessages > 0 && projectedTotalMessages % 10 === 0
     if (willBuildKnowledgeGraph) {
       setIsBuildingGraph(true)
-      setGraphStatusMessage('Building knowledge graph...')
+      setGraphStatusMessage('Building memory map...')
     }
 
     try {
@@ -123,19 +122,12 @@ export default function ChatInterface() {
       })
       setRecentConcepts(extractedConcepts.slice(0, 5))
 
-      if (extractedConcepts.length > 0) {
-        console.log(`Concepts: ${extractedConcepts.join(', ')}`)
-      }
-      if (data.deep_analysis_triggered) {
-        console.log('Deep analysis triggered - knowledge graph will refresh.')
-      }
-
       if (data.consolidation_ran) {
         setIsBuildingGraph(false)
-        setGraphStatusMessage('Knowledge graph updated.')
+        setGraphStatusMessage('Memory map updated.')
       } else if (data.consolidation_error) {
         setIsBuildingGraph(false)
-        setGraphStatusMessage('Knowledge graph build failed.')
+        setGraphStatusMessage('Memory map build failed.')
       } else if (!willBuildKnowledgeGraph) {
         setGraphStatusMessage('')
       }
@@ -166,36 +158,32 @@ export default function ChatInterface() {
     event.currentTarget.form?.requestSubmit()
   }
 
+  const statusLabel = isBuildingGraph
+    ? 'Building memory map'
+    : telemetry.researchHint
+      ? 'Research mode'
+      : 'Recall mode active'
+
   return (
     <section className="panel panel-chat" aria-labelledby="chat-heading">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Working Memory</p>
-          <h2 id="chat-heading">MindChat Console</h2>
+          <p className="eyebrow">Conversation</p>
+          <h2 id="chat-heading">Recall Workspace</h2>
         </div>
         <code className="session-pill" title="Session ID used by backend + Neo4j">
-          {sessionId.slice(0, 8)}…
+          {sessionId.slice(0, 8)}...
         </code>
       </div>
 
-      <div className="telemetry-grid" role="status" aria-live="polite">
-        <div className="telemetry-card">
-          <span>Working Memory</span>
-          <strong>{telemetry.workingMemorySize}/20</strong>
+      <div className="composer-guide">
+        <div className="status-chip" role="status" aria-live="polite">
+          <span className={`status-dot ${isBuildingGraph ? 'busy' : ''}`} aria-hidden="true" />
+          <strong>{statusLabel}</strong>
         </div>
-        <div className="telemetry-card">
-          <span>Total Messages</span>
-          <strong>{telemetry.totalMessages}</strong>
-        </div>
-        <div className={`telemetry-card ${isBuildingGraph ? 'alert' : ''}`}>
-          <span>Knowledge Graph</span>
-          <strong>
-            {isBuildingGraph
-              ? 'Building knowledge graph...'
-              : telemetry.consolidationRan
-                ? 'Updated'
-                : 'Auto-build every 10 msgs'}
-          </strong>
+        <div className="prompt-suggestions" aria-label="Example prompts">
+          <span>Try: "that thing about memory and 7"</span>
+          <span>Try: "the blue alien jungle movie"</span>
         </div>
       </div>
 
@@ -214,7 +202,7 @@ export default function ChatInterface() {
         {isSending ? (
           <article className="chat-bubble assistant" aria-live="polite">
             <header>MindChat</header>
-            <p>{isBuildingGraph ? 'Thinking... Building knowledge graph...' : 'Thinking...'}</p>
+            <p>{isBuildingGraph ? 'Thinking... Building memory map...' : 'Thinking...'}</p>
           </article>
         ) : null}
       </div>
@@ -228,25 +216,20 @@ export default function ChatInterface() {
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleInputKeyDown}
-          placeholder="Example TOT query: “What was that thing about memory and 7?”"
+          placeholder="Describe fragments, scenes, numbers, or related ideas..."
           rows={3}
           disabled={isSending}
         />
         <div className="chat-actions">
           <div className="form-hints">
-            <span>
-              {telemetry.researchHint
-                ? 'Research intent detected (Tavily hook later)'
-                : 'TOT mode active'}
-            </span>
             {recentConcepts.length > 0 ? (
-              <span>Extracted concepts: {recentConcepts.join(', ')}</span>
+              <span>Recent recall cues: {recentConcepts.join(', ')}</span>
             ) : null}
             {graphStatusMessage ? <span>{graphStatusMessage}</span> : null}
             {error ? <span className="error-text">{error}</span> : null}
           </div>
           <button type="submit" disabled={isSending || !input.trim()}>
-            {isSending ? 'Thinking…' : 'Send'}
+            {isSending ? 'Thinking...' : 'Send'}
           </button>
         </div>
       </form>
